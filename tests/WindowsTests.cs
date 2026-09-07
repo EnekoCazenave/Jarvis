@@ -20,8 +20,13 @@ namespace Jarvis.Tests
                     var orchestrator = new Orchestrator(new SimulatedReasoner(SimulationScenario.Open), new DocumentPolicy(new[] { path }), adapter);
                     var result = orchestrator.Run("Ouvre le document témoin", path);
                     TestRunner.Check(result.State == TaskState.Succeeded, result.Message);
-                    TestRunner.Check(result.Evidence.Description.Contains("SHA-256"), "Real file content evidence");
+                    TestRunner.Check(result.Evidence.Description.EndsWith("E2CD8A32A9DE6ACCD010249992907DD56E1CE8B900CB6BCF80B0D5AAB627191D."), "Known real document content fingerprint");
                     TestRunner.Check(Application.OpenForms.Count == 1, "A real Windows document window opened");
+                    foreach (Control control in Application.OpenForms[0].Controls)
+                    {
+                        var text = control as TextBox;
+                        if (text != null) TestRunner.Check(text.Visible && text.ReadOnly && text.Text == "Preuve Windows réelle : été, café, français.\r\nTicket #2.", "Real reader displays the expected text read-only");
+                    }
                     Console.WriteLine("PASS Windows real file -> visible document window: " + result.Evidence.Description);
                 }
                 using (var window = new MainWindow(folder))
