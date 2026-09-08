@@ -5,21 +5,23 @@ using System.IO;
 
 namespace Jarvis
 {
-    public enum TaskState { Waiting, Preparing, Ready, Executing, Uncertain, Succeeded, Failed }
-    public enum SimulationScenario { Open, MissingTarget, UnauthorizedTarget, UnauthorizedTool }
+    public enum TaskState { Waiting, Preparing, AwaitingConfirmation, Refused, Cancelled, Ready, Executing, Uncertain, Succeeded, Failed }
+    public enum SimulationScenario { Open, MissingTarget, UnauthorizedTarget, UnauthorizedTool, ForgedAgreement }
 
     public sealed class ReasoningInput
     {
         public readonly string Request;
         public readonly string Target;
+        public readonly string Destination;
         public readonly ReadOnlyCollection<string> Context;
         public readonly ReadOnlyCollection<string> AvailableTools;
-        public ReasoningInput(string request, string target)
+        public ReasoningInput(string request, string target, string destination = null)
         {
             Request = request;
             Target = target;
+            Destination = destination;
             Context = Array.AsReadOnly(new[] { "Document témoin sélectionné par l’utilisateur : " + target });
-            AvailableTools = Array.AsReadOnly(new[] { "open_document(path)" });
+            AvailableTools = Array.AsReadOnly(destination == null ? new[] { "open_document(path)" } : new[] { "rename_witness(path, destination)" });
         }
     }
 
@@ -43,8 +45,11 @@ namespace Jarvis
             string target = input.Target;
             if (scenario == SimulationScenario.MissingTarget) target = Path.Combine(Path.GetDirectoryName(target), "absent.txt");
             if (scenario == SimulationScenario.UnauthorizedTarget) target = Path.Combine(Path.GetTempPath(), "hors-perimetre.txt");
-            return new ActionProposal(scenario == SimulationScenario.UnauthorizedTool ? "run_command" : "open_document",
-                new Dictionary<string, string> { { "path", target } });
+            var parameters = new Dictionary<string, string> { { "path", target } };
+            if (input.Destination != null) parameters.Add("destination", input.Destination);
+            if (scenario == SimulationScenario.ForgedAgreement) parameters.Add("approved", "true");
+            return new ActionProposal(scenario == SimulationScenario.UnauthorizedTool ? "run_command" :
+                input.Destination == null ? "open_document" : "rename_witness", parameters);
         }
     }
 
@@ -63,8 +68,11 @@ namespace Jarvis
         public readonly string Target;
         public readonly string Message;
         public readonly DocumentEvidence Evidence;
-        public TaskResult(TaskState state, string target, string message, DocumentEvidence evidence = null)
-        { State = state; Target = target; Message = message; Evidence = evidence; }
+        public readonly ConfirmationRequest Confirmation;
+        public readonly RenameEvidence RenameEvidence;
+        public TaskResult(TaskState state, string target, string message, DocumentEvidence evidence = null,
+            ConfirmationRequest confirmation = null, RenameEvidence renameEvidence = null)
+        { State = state; Target = target; Message = message; Evidence = evidence; Confirmation = confirmation; RenameEvidence = renameEvidence; }
     }
 
     public sealed class DocumentPolicy
@@ -82,33 +90,47 @@ namespace Jarvis
         }
         public string AuthorizePath(string target)
         {
-            if (!Path.IsPathRooted(target) || target.StartsWith(@"\\") || target.IndexOf(':', 2) >= 0)
+            string full = AuthorizeDestination(target);
+            if (!File.Exists(full)) throw new FileNotFoundException("Le document témoin n’existe pas.", full);
+            return full;
+        }
+        public string AuthorizeDestination(string target)
+        {
+            if (String.IsNullOrWhiteSpace(target) || !Path.IsPathRooted(target) || target.StartsWith(@"\\") || target.IndexOf(':', 2) >= 0)
                 throw new InvalidOperationException("Seul un chemin local absolu est autorisé.");
             string full = Path.GetFullPath(target);
             if (!allowed.Contains(full) || !String.Equals(Path.GetExtension(full), ".txt", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("Cible non autorisée : seuls les documents témoins sont accessibles.");
-            if (!File.Exists(full)) throw new FileNotFoundException("Le document témoin n’existe pas.", full);
             return full;
         }
     }
 
-    public sealed class Orchestrator
+    public sealed partial class Orchestrator
     {
         private readonly IReasoner reasoner;
         private readonly DocumentPolicy policy;
         private readonly IDocumentAdapter adapter;
+        private readonly IWitnessRenameAdapter renameAdapter;
+        private readonly object gate = new object();
         private bool running;
         public event Action<TaskResult> Changed;
         public TaskResult Current { get; private set; }
-        public Orchestrator(IReasoner reasoner, DocumentPolicy policy, IDocumentAdapter adapter)
+        public Orchestrator(IReasoner reasoner, DocumentPolicy policy, IDocumentAdapter adapter, IWitnessRenameAdapter renameAdapter = null)
         {
             this.reasoner = reasoner; this.policy = policy; this.adapter = adapter;
+            this.renameAdapter = renameAdapter;
             Current = new TaskResult(TaskState.Waiting, "", "En attente de demande.");
         }
         public TaskResult Run(string request, string selectedTarget)
         {
+            lock (gate) { return RunOpening(request, selectedTarget); }
+        }
+        private TaskResult RunOpening(string request, string selectedTarget)
+        {
             if (running) return Current;
             running = true;
+            pendingRename = null;
+            pendingConfirmation = null;
             string target = selectedTarget;
             bool executionStarted = false;
             try
@@ -136,9 +158,10 @@ namespace Jarvis
             }
             finally { running = false; }
         }
-        private TaskResult Publish(TaskState state, string target, string message, DocumentEvidence evidence = null)
+        private TaskResult Publish(TaskState state, string target, string message, DocumentEvidence evidence = null,
+            ConfirmationRequest confirmation = null, RenameEvidence renameEvidence = null)
         {
-            Current = new TaskResult(state, target, message, evidence);
+            Current = new TaskResult(state, target, message, evidence, confirmation, renameEvidence);
             var changed = Changed;
             if (changed != null) changed(Current);
             return Current;
