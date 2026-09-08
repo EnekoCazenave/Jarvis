@@ -1,0 +1,3 @@
+build/
+.cqr-archive/
+*.user

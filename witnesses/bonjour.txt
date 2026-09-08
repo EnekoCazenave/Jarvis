@@ -1,0 +1,4 @@
+Bonjour depuis Jarvis !
+
+Ce document témoin est ouvert localement sous Windows.
+Le raisonnement est simulé. La lecture de ce fichier est réelle.
