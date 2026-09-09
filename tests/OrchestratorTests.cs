@@ -14,12 +14,19 @@ namespace Jarvis.Tests
             {
                 System.Windows.Forms.Application.EnableVisualStyles();
                 System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
+                ConfirmationTests.Run();
+                if (Array.IndexOf(args, "--confirmations") >= 0) return 0;
                 AuthorizedDocumentOpensOnceAfterProof();
                 Console.WriteLine("PASS authorized document opens once after proof (orchestrator)");
                 RefusalsHaveNoEffect();
                 UnverifiedOpeningNeverSucceeds();
                 ReasoningContractReceivesRequestContextAndTools();
-                if (Array.IndexOf(args, "--windows") >= 0) WindowsTests.Run();
+                if (Array.IndexOf(args, "--windows") >= 0)
+                {
+                    WindowsTests.Run();
+                    WindowsWitnessRenameTests.Run();
+                    ConfirmationWindowTests.Run();
+                }
                 return 0;
             }
             catch (Exception error) { Console.Error.WriteLine(error); return 1; }
